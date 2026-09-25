@@ -28,7 +28,10 @@ logger = logging.getLogger("DerivAIBot")
 # CONFIGURACIÓN DESDE VARIABLES DE ENTORNO
 # =============================================================================
 DERIV_API_TOKEN = os.getenv("DERIV_API_TOKEN", "")
-DERIV_APP_ID = os.getenv("DERIV_APP_ID", "1089")
+# Si DERIV_APP_ID tiene un formato de UUID o no numérico, usar 1089 por defecto para la conexión WS de Deriv
+raw_app_id = os.getenv("DERIV_APP_ID", "1089").strip()
+DERIV_APP_ID = raw_app_id if raw_app_id.isdigit() else "1089"
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 SYMBOL = os.getenv("SYMBOL", "R_100")
 STAKE_AMOUNT = float(os.getenv("STAKE_AMOUNT", "1.0"))
@@ -92,7 +95,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def run_http_server():
     server_address = ('', PORT)
     httpd = HTTPServer(server_address, HealthCheckHandler)
-    logger.info(f"🌐 Servidor Health-Check iniciado en el puerto {PORT}")
+    logger.info(f"🌐 Servidor Health-Check activo en puerto {PORT}")
     httpd.serve_forever()
 
 def calculate_rsi(prices, period=14):
@@ -192,9 +195,13 @@ def send_deriv_request(req_dict):
 
 def authorize_account():
     if DERIV_API_TOKEN:
+        logger.info("🔑 Enviando solicitud de autorización a Deriv...")
         send_deriv_request({"authorize": DERIV_API_TOKEN})
+    else:
+        logger.error("❌ DERIV_API_TOKEN no está presente en las variables de entorno.")
 
 def subscribe_ticks():
+    logger.info(f"📊 Suscribiendo a Ticks de {SYMBOL}...")
     send_deriv_request({"ticks": SYMBOL})
 
 def buy_contract(contract_type, stake, duration_ticks=5):
@@ -220,11 +227,14 @@ def on_message(ws, message):
 
         if msg_type == "authorize":
             auth = data.get("authorize", {})
+            if "error" in data:
+                logger.error(f"❌ Error de Autorización Deriv: {data['error'].get('message')}")
+                return
             state.authorized = True
             state.balance = float(auth.get("balance", 0.0))
             state.currency = auth.get("currency", "USD")
             state.account_id = auth.get("loginid", "")
-            logger.info(f"✅ Autorizado: {state.account_id} | Balance: {state.balance} {state.currency}")
+            logger.info(f"✅ AUTORIZADO CON ÉXITO | Cuenta: {state.account_id} | Balance: {state.balance} {state.currency}")
             subscribe_ticks()
 
         elif msg_type == "tick":
@@ -248,6 +258,7 @@ def on_message(ws, message):
         elif msg_type == "buy":
             buy_info = data.get("buy", {})
             state.active_contract_id = buy_info.get("contract_id")
+            logger.info(f"🎉 Contrato Abierto ID: {state.active_contract_id}")
             send_deriv_request({"proposal_open_contract": 1, "contract_id": state.active_contract_id, "subscribe": 1})
 
         elif msg_type == "proposal_open_contract":
@@ -256,7 +267,7 @@ def on_message(ws, message):
                 profit = float(poc.get("profit", 0.0))
                 state.total_profit += profit
                 state.trades_count += 1
-                logger.info(f"🏁 Resultado: {profit:+.2f} USD | Total Acumulado: {state.total_profit:+.2f} USD")
+                logger.info(f"🏁 Resultado Operación: {profit:+.2f} USD | Total Acumulado: {state.total_profit:+.2f} USD")
                 state.active_contract_id = None
 
     except Exception as e:
@@ -280,19 +291,34 @@ def on_error(ws, error):
     logger.error(f"Error WS: {error}")
 
 def on_close(ws, status, msg):
-    logger.warning("Conexión cerrada. Reconectando...")
+    logger.warning("Conexión WebSocket cerrada. Reconectando en 5s...")
     time.sleep(5)
-    start_bot()
 
 def on_open(ws):
-    logger.info("🟢 Conectado con Deriv WebSocket")
+    logger.info("🟢 Conectado exitosamente con Deriv WebSocket Server")
     state.connected = True
     authorize_account()
 
 def start_bot():
     ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
-    state.ws = websocket.WebSocketApp(ws_url, on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close)
-    state.ws.run_forever(ping_interval=30, ping_timeout=10)
+    logger.info(f"🔌 Conectando a {ws_url}...")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    while True:
+        try:
+            state.ws = websocket.WebSocketApp(
+                ws_url,
+                header=headers,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
+            state.ws.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as e:
+            logger.error(f"Excepción en bucle principal WS: {e}")
+            time.sleep(5)
 
 if __name__ == "__main__":
     # Iniciar servidor HTTP para el Health Check de Render Free Tier

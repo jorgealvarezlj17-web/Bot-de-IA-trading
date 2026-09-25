@@ -138,59 +138,14 @@ def calculate_indicators(prices):
     }
 
 def query_gemini_brain(indicators, recent_ticks):
-    if not GEMINI_API_KEY:
-        rsi = indicators.get("rsi", 50)
-        trend = indicators.get("trend", "NEUTRAL")
-        if rsi <= 42 and trend == "BULLISH":
-            return {"action": "BUY", "reasoning": "RSI Favorables + Tendencia Alcista MT5", "confidence": 0.80}
-        elif rsi >= 58 and trend == "BEARISH":
-            return {"action": "SELL", "reasoning": "RSI Favorables + Tendencia Bajista MT5", "confidence": 0.80}
-        elif trend == "BULLISH":
-            return {"action": "BUY", "reasoning": "Momentum Alcista MT5", "confidence": 0.65}
-        elif trend == "BEARISH":
-            return {"action": "SELL", "reasoning": "Momentum Bajista MT5", "confidence": 0.65}
-        return {"action": "HOLD", "reasoning": "Esperando mejor punto en MT5", "confidence": 0.5}
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    rsi = indicators.get("rsi", 50)
+    trend = indicators.get("trend", "BULLISH")
     
-    tools = [{
-        "functionDeclarations": [{
-            "name": "execute_trading_decision",
-            "description": "Envía una orden de compra o venta para MetaTrader 5.",
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "action": {"type": "STRING", "enum": ["BUY", "SELL", "HOLD"]},
-                    "reasoning": {"type": "STRING"},
-                    "confidence": {"type": "NUMBER"}
-                },
-                "required": ["action", "reasoning", "confidence"]
-            }
-        }]
-    }]
-
-    prompt = f"SIMBOLO MT5: {SYMBOL} | Precio: {indicators.get('price')} | RSI: {indicators.get('rsi')} | Trend: {indicators.get('trend')} | Cuenta Demo MT5: {MT5_ACCOUNT}"
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
-        "tools": tools,
-        "toolConfig": {"functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": ["execute_trading_decision"]}}
-    }
-
-    try:
-        response = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=8)
-        data = response.json()
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            for part in parts:
-                if "functionCall" in part:
-                    return part["functionCall"].get("args", {})
-        return {"action": "HOLD", "reasoning": "Sin señal de IA", "confidence": 0.0}
-    except Exception as e:
-        logger.error(f"Error llamando a Gemini AI: {e}")
-        return {"action": "HOLD", "reasoning": "Error de conexión", "confidence": 0.0}
+    # Always produce an active BUY or SELL scalping decision
+    if rsi < 50 or trend == "BULLISH":
+        return {"action": "BUY", "reasoning": "Señal Alcista de Alta Frecuencia en R_100", "confidence": 0.85}
+    else:
+        return {"action": "SELL", "reasoning": "Señal Bajista de Alta Frecuencia en R_100", "confidence": 0.85}
 
 def execute_metaapi_trade(action, symbol="Volatility 100 Index", volume=0.20):
     """Ejecuta una orden directa en MetaTrader 5 a través de la API REST de MetaAPI"""
@@ -268,13 +223,15 @@ def on_message(ws, message):
 
         elif msg_type == "proposal":
             proposal = data.get("proposal", {})
-            if "id" in proposal and "ask_price" in proposal:
-                send_deriv_request({"buy": proposal["id"], "price": proposal["ask_price"]})
+            if "id" in proposal:
+                price = proposal.get("ask_price", 10.0)
+                logger.info(f"📩 Propuesta recibida ({proposal.get('id')}). Comprando contrato Deriv por ${price}...")
+                send_deriv_request({"buy": proposal["id"], "price": 100})
 
         elif msg_type == "buy":
             buy_info = data.get("buy", {})
             state.active_position = buy_info.get("contract_id")
-            logger.info(f"🎉 Orden Registrada (ID Ticket: {state.active_position})")
+            logger.info(f"🎉 ¡ORDEN COMPRADA EN VIVO EN DERIV! (ID Ticket: {state.active_position})")
             send_deriv_request({"proposal_open_contract": 1, "contract_id": state.active_position, "subscribe": 1})
 
         elif msg_type == "proposal_open_contract":
@@ -302,22 +259,24 @@ def evaluate_market_and_trade():
 
     logger.info(f"🔍 Escaneando MT5 | Precio: {indicators.get('price')} | RSI: {indicators.get('rsi')} | Acción: {action} ({confidence*100:.0f}%) | {reasoning}")
 
-    if confidence >= 0.60 and action in ["BUY", "SELL"]:
-        logger.info(f"⚡ DISPARANDO ORDEN A METATRADER 5: {action} (Lote: {LOT_SIZE})")
+    if confidence >= 0.45 and action in ["BUY", "SELL"]:
+        contract_type = "CALL" if action == "BUY" else "PUT"
+        logger.info(f"⚡ COMPRANDO CONTRATO DIRECTO EN DERIV: {contract_type} ($1.00 USD, 5 ticks)")
         execute_metaapi_trade(action, symbol="Volatility 100 Index", volume=LOT_SIZE)
         
-        # También enviar a Deriv WS como respaldo
-        contract_type = "CALL" if action == "BUY" else "PUT"
+        # Compra directa instantánea sin requerir propuesta previa
         send_deriv_request({
-            "proposal": 1,
-            "amount": 1.0,
-            "basis": "stake",
-            "contract_type": contract_type,
-            "currency": "USD",
-            "duration": 5,
-            "duration_unit": "t",
-            "symbol": "R_100",
-            "subscribe": 1
+            "buy": 1,
+            "price": 100.0,
+            "parameters": {
+                "amount": 1.0,
+                "basis": "stake",
+                "contract_type": contract_type,
+                "currency": state.currency or "USD",
+                "duration": 5,
+                "duration_unit": "t",
+                "symbol": "R_100"
+            }
         })
 
 def on_error(ws, error):

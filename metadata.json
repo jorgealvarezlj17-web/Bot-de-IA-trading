@@ -1,0 +1,8 @@
+{
+  "name": "Deriv AI Trading Hub",
+  "description": "Centro de control y servidor ejecutor de trading automático con Google AI Studio y Deriv WebSocket API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

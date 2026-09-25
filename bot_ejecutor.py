@@ -333,14 +333,21 @@ def on_open(ws):
     authorize_account()
 
 def start_bot():
-    ws_url = f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
+    ws_urls = [
+        f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}",
+        f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}"
+    ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Origin": "https://app.deriv.com"
     }
+    url_index = 0
     while True:
+        current_url = ws_urls[url_index % len(ws_urls)]
         try:
+            logger.info(f"🔌 Conectando a WebSocket Deriv: {current_url}")
             state.ws = websocket.WebSocketApp(
-                ws_url,
+                current_url,
                 header=headers,
                 on_open=on_open,
                 on_message=on_message,
@@ -349,8 +356,9 @@ def start_bot():
             )
             state.ws.run_forever(ping_interval=30, ping_timeout=10)
         except Exception as e:
-            logger.error(f"Excepción en bucle de reconexión: {e}")
-            time.sleep(5)
+            logger.error(f"Excepción en bucle de reconexión WebSocket: {e}")
+            url_index += 1
+            time.sleep(3)
 
 if __name__ == "__main__":
     logger.info("=========================================================")

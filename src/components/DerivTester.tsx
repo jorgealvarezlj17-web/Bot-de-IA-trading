@@ -3,7 +3,7 @@ import { Activity, ShieldCheck, RefreshCw, DollarSign, Zap, CheckCircle2, AlertT
 import { DerivAccount, MarketIndicators } from '../types';
 
 export const DerivTester: React.FC = () => {
-  const [token, setToken] = useState<string>('pat_e1812e7694a4130e5187e7e77a1c9392fabffb197ffe209629e12f6a9a337546');
+  const [token, setToken] = useState<string>('');
   const [appId, setAppId] = useState<string>('1089');
   const [loading, setLoading] = useState<boolean>(false);
   const [account, setAccount] = useState<DerivAccount | null>(null);
@@ -41,8 +41,9 @@ export const DerivTester: React.FC = () => {
     setLogs((prev) => [{ time, type, text, latencyMs }, ...prev.slice(0, 49)]);
   };
 
-  // Deriv official WebSocket endpoints to try
+  // Deriv official WebSocket endpoints to try (New official v1 + legacy fallbacks)
   const WS_ENDPOINTS = [
+    `wss://api.derivws.com/trading/v1/options/ws/public`,
     `wss://ws.derivws.com/websockets/v3?app_id=${appId.trim() || '1089'}`,
     `wss://ws.binaryws.com/websockets/v3?app_id=${appId.trim() || '1089'}`,
     `wss://frontend.binaryws.com/websockets/v3?app_id=${appId.trim() || '1089'}`

@@ -166,63 +166,75 @@ Analiza el mercado usando tus System Instructions y devuelve la llamada a funci�
   }
 });
 
+// Official Deriv Endpoints list
+const DERIV_WS_ENDPOINTS = [
+  'wss://api.derivws.com/trading/v1/options/ws/public',
+  'wss://ws.derivws.com/websockets/v3',
+  'wss://ws.binaryws.com/websockets/v3',
+];
+
 /**
  * 2. Test Deriv WebSocket Token Connection
  */
 app.post('/api/deriv/ping', (req, res) => {
-  const { appId = '1089' } = req.body;
   const start = Date.now();
-  const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${appId}`;
-  
   let responded = false;
-  let ws: WebSocket;
-  try {
-    ws = new WebSocket(wsUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Origin': 'https://app.deriv.com'
+  let tried = 0;
+
+  const tryEndpoint = (url: string) => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url, { handshakeTimeout: 2500 });
+    } catch (e: any) {
+      next();
+      return;
+    }
+
+    const t = setTimeout(() => {
+      try { ws.close(); } catch (err) {}
+      next();
+    }, 3000);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ ping: 1 }));
+    });
+
+    ws.on('message', (data: WebSocket.Data) => {
+      if (!responded) {
+        try {
+          const parsed = JSON.parse(data.toString());
+          if (parsed.ping === 'pong') {
+            responded = true;
+            clearTimeout(t);
+            try { ws.close(); } catch (err) {}
+            const latency = Date.now() - start;
+            return res.json({ success: true, ping: 'pong', latencyMs: latency, endpoint: url });
+          }
+        } catch (e: any) {}
       }
     });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
 
-  const timeout = setTimeout(() => {
-    if (!responded) {
-      responded = true;
-      try { ws.close(); } catch (e) {}
-      res.status(504).json({ success: false, error: 'Timeout de 5s al conectar con Deriv Ping' });
-    }
-  }, 5000);
+    ws.on('error', () => {
+      clearTimeout(t);
+      next();
+    });
+  };
 
-  ws.on('open', () => {
-    ws.send(JSON.stringify({ ping: 1 }));
-  });
-
-  ws.on('message', (data: WebSocket.Data) => {
-    if (!responded) {
-      try {
-        const parsed = JSON.parse(data.toString());
-        if (parsed.ping === 'pong') {
-          responded = true;
-          clearTimeout(timeout);
-          try { ws.close(); } catch (e) {}
-          const latency = Date.now() - start;
-          return res.json({ success: true, ping: 'pong', latencyMs: latency, endpoint: wsUrl });
-        }
-      } catch (e: any) {
-        // ignore
+  const next = () => {
+    if (responded) return;
+    if (tried < DERIV_WS_ENDPOINTS.length) {
+      const u = DERIV_WS_ENDPOINTS[tried];
+      tried++;
+      tryEndpoint(u);
+    } else {
+      if (!responded) {
+        responded = true;
+        res.status(504).json({ success: false, error: 'Servidores de Deriv no respondieron al ping' });
       }
     }
-  });
+  };
 
-  ws.on('error', (err) => {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timeout);
-      res.status(502).json({ success: false, error: `Error conectando a Deriv: ${err.message}` });
-    }
-  });
+  next();
 });
 
 /**
@@ -236,76 +248,87 @@ app.post('/api/deriv/test-connection', (req, res) => {
     return;
   }
 
-  const wsUrl = `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`;
-  const ws = new WebSocket(wsUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-      'Origin': 'https://app.deriv.com'
-    }
-  });
+  const endpoints = [
+    `wss://api.derivws.com/trading/v1/options/ws/public`,
+    `wss://ws.derivws.com/websockets/v3?app_id=${appId}`,
+    `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`
+  ];
 
   let responded = false;
+  let idx = 0;
 
-  const timeout = setTimeout(() => {
-    if (!responded) {
-      responded = true;
-      ws.close();
-      res.status(504).json({ success: false, error: 'Tiempo de espera agotado al conectar con Deriv' });
-    }
-  }, 10000);
-
-  ws.on('open', () => {
-    // Send authorize request
-    ws.send(JSON.stringify({ authorize: token }));
-  });
-
-  ws.on('message', (data: WebSocket.Data) => {
+  const tryConnect = (wsUrl: string) => {
+    let ws: WebSocket;
     try {
-      const parsed = JSON.parse(data.toString());
-      if (parsed.msg_type === 'authorize') {
-        if (parsed.error) {
-          if (!responded) {
-            responded = true;
-            clearTimeout(timeout);
-            ws.close();
-            res.json({ success: false, error: parsed.error.message || 'Token inválido' });
-          }
-        } else {
-          const auth = parsed.authorize;
-          if (!responded) {
-            responded = true;
-            clearTimeout(timeout);
-            ws.close();
-            res.json({
-              success: true,
-              account: {
-                loginid: auth.loginid,
-                email: auth.email,
-                balance: auth.balance,
-                currency: auth.currency,
-                is_virtual: auth.is_virtual === 1,
-              },
-            });
+      ws = new WebSocket(wsUrl, { handshakeTimeout: 3500 });
+    } catch (e) {
+      tryNext();
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      try { ws.close(); } catch (e) {}
+      tryNext();
+    }, 4000);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ authorize: token }));
+    });
+
+    ws.on('message', (data: WebSocket.Data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.msg_type === 'authorize') {
+          if (parsed.error) {
+            if (!responded) {
+              responded = true;
+              clearTimeout(timeout);
+              try { ws.close(); } catch (e) {}
+              res.json({ success: false, error: parsed.error.message || 'Token inválido' });
+            }
+          } else {
+            const auth = parsed.authorize;
+            if (!responded) {
+              responded = true;
+              clearTimeout(timeout);
+              try { ws.close(); } catch (e) {}
+              res.json({
+                success: true,
+                account: {
+                  loginid: auth.loginid,
+                  email: auth.email,
+                  balance: auth.balance,
+                  currency: auth.currency,
+                  is_virtual: auth.is_virtual === 1,
+                },
+              });
+            }
           }
         }
-      }
-    } catch (e: any) {
+      } catch (e: any) {}
+    });
+
+    ws.on('error', () => {
+      clearTimeout(timeout);
+      tryNext();
+    });
+  };
+
+  const tryNext = () => {
+    if (responded) return;
+    if (idx < endpoints.length) {
+      const target = endpoints[idx];
+      idx++;
+      tryConnect(target);
+    } else {
       if (!responded) {
         responded = true;
-        clearTimeout(timeout);
-        ws.close();
-        res.status(500).json({ success: false, error: 'Error parseando respuesta de Deriv' });
+        res.status(504).json({ success: false, error: 'Tiempo de espera agotado al conectar con Deriv' });
       }
     }
-  });
+  };
 
-  ws.on('error', (err) => {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timeout);
-      res.status(500).json({ success: false, error: `WebSocket Error: ${err.message}` });
-    }
-  });
+  tryNext();
 });
 
 /**
@@ -314,79 +337,83 @@ app.post('/api/deriv/test-connection', (req, res) => {
 app.post('/api/deriv/fetch-ticks', (req, res) => {
   const { symbol = 'R_100', count = 20, appId = '1089' } = req.body;
 
-  const wsUrl = `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`;
-  const ws = new WebSocket(wsUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-      'Origin': 'https://app.deriv.com'
-    }
-  });
+  const endpoints = [
+    `wss://api.derivws.com/trading/v1/options/ws/public`,
+    `wss://ws.derivws.com/websockets/v3?app_id=${appId}`
+  ];
 
   let responded = false;
+  let idx = 0;
 
-  const timeout = setTimeout(() => {
-    if (!responded) {
-      responded = true;
-      ws.close();
-      res.status(504).json({ success: false, error: 'Tiempo de espera agotado solicitando Ticks' });
-    }
-  }, 8000);
-
-  ws.on('open', () => {
-    ws.send(JSON.stringify({
-      ticks_history: symbol,
-      adjust_start_time: 1,
-      count: count,
-      end: 'latest',
-      start: 1,
-      style: 'ticks'
-    }));
-  });
-
-  ws.on('message', (data: WebSocket.Data) => {
+  const tryFetch = (url: string) => {
+    let ws: WebSocket;
     try {
-      const parsed = JSON.parse(data.toString());
-      if (parsed.msg_type === 'history') {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeout);
-          ws.close();
-          const history = parsed.history;
-          const prices = history?.prices || [];
-          const times = history?.times || [];
-          res.json({
-            success: true,
-            symbol,
-            prices,
-            times,
-            latestPrice: prices.length > 0 ? prices[prices.length - 1] : null,
-          });
+      ws = new WebSocket(url, { handshakeTimeout: 3500 });
+    } catch (e) {
+      next();
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      try { ws.close(); } catch (e) {}
+      next();
+    }, 4500);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        ticks_history: symbol,
+        adjust_start_time: 1,
+        count: count,
+        end: 'latest',
+        start: 1,
+        style: 'ticks'
+      }));
+    });
+
+    ws.on('message', (data: WebSocket.Data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.msg_type === 'history') {
+          if (!responded) {
+            responded = true;
+            clearTimeout(timeout);
+            try { ws.close(); } catch (e) {}
+            const history = parsed.history;
+            const prices = history?.prices || [];
+            const times = history?.times || [];
+            return res.json({
+              success: true,
+              symbol,
+              prices,
+              times,
+              latestPrice: prices.length > 0 ? prices[prices.length - 1] : null,
+            });
+          }
         }
-      } else if (parsed.error) {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeout);
-          ws.close();
-          res.json({ success: false, error: parsed.error.message });
-        }
-      }
-    } catch (e: any) {
+      } catch (e: any) {}
+    });
+
+    ws.on('error', () => {
+      clearTimeout(timeout);
+      next();
+    });
+  };
+
+  const next = () => {
+    if (responded) return;
+    if (idx < endpoints.length) {
+      const u = endpoints[idx];
+      idx++;
+      tryFetch(u);
+    } else {
       if (!responded) {
         responded = true;
-        clearTimeout(timeout);
-        ws.close();
-        res.status(500).json({ success: false, error: 'Error obteniendo historial de ticks' });
+        res.status(504).json({ success: false, error: 'Tiempo de espera agotado solicitando Ticks' });
       }
     }
-  });
+  };
 
-  ws.on('error', (err) => {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timeout);
-      res.status(500).json({ success: false, error: err.message });
-    }
-  });
+  next();
 });
 
 /**
@@ -394,7 +421,7 @@ app.post('/api/deriv/fetch-ticks', (req, res) => {
  */
 app.post('/api/deriv/execute-trade', (req, res) => {
   const {
-    token = 'pat_e1812e7694a4130e5187e7e77a1c9392fabffb197ffe209629e12f6a9a337546',
+    token,
     symbol = 'R_100',
     contractType = 'CALL',
     amount = 1.0,
@@ -406,97 +433,107 @@ app.post('/api/deriv/execute-trade', (req, res) => {
     return res.status(400).json({ success: false, error: 'Token de API requerido' });
   }
 
-  const wsUrl = `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`;
-  const ws = new WebSocket(wsUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-      'Origin': 'https://app.deriv.com'
-    }
-  });
+  const endpoints = [
+    `wss://api.derivws.com/trading/v1/options/ws/public`,
+    `wss://ws.derivws.com/websockets/v3?app_id=${appId}`
+  ];
 
   let responded = false;
+  let idx = 0;
 
-  const timeout = setTimeout(() => {
-    if (!responded) {
-      responded = true;
-      ws.close();
-      res.status(504).json({ success: false, error: 'Tiempo de espera agotado ejecutando orden en Deriv' });
-    }
-  }, 10000);
-
-  ws.on('open', () => {
-    ws.send(JSON.stringify({ authorize: token }));
-  });
-
-  ws.on('message', (data: WebSocket.Data) => {
+  const tryTrade = (url: string) => {
+    let ws: WebSocket;
     try {
-      const parsed = JSON.parse(data.toString());
-      if (parsed.msg_type === 'authorize') {
-        if (parsed.error) {
+      ws = new WebSocket(url, { handshakeTimeout: 4000 });
+    } catch (e) {
+      next();
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      try { ws.close(); } catch (e) {}
+      next();
+    }, 6000);
+
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ authorize: token }));
+    });
+
+    ws.on('message', (data: WebSocket.Data) => {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.msg_type === 'authorize') {
+          if (parsed.error) {
+            if (!responded) {
+              responded = true;
+              clearTimeout(timeout);
+              try { ws.close(); } catch (e) {}
+              return res.json({ success: false, error: parsed.error.message || 'Error de autorización' });
+            }
+          } else {
+            ws.send(JSON.stringify({
+              buy: 1,
+              price: 100.0,
+              parameters: {
+                amount: parseFloat(amount),
+                basis: 'stake',
+                contract_type: contractType,
+                currency: parsed.authorize.currency || 'USD',
+                duration: parseInt(durationTicks, 10),
+                duration_unit: 't',
+                symbol: symbol
+              }
+            }));
+          }
+        } else if (parsed.msg_type === 'buy') {
           if (!responded) {
             responded = true;
             clearTimeout(timeout);
-            ws.close();
-            res.json({ success: false, error: parsed.error.message || 'Error de autorización' });
+            try { ws.close(); } catch (e) {}
+            const buyData = parsed.buy;
+            return res.json({
+              success: true,
+              contract_id: buyData.contract_id,
+              buy_price: buyData.buy_price,
+              balance_after: buyData.balance_after,
+              purchase_time: buyData.purchase_time,
+              shortcode: buyData.shortcode,
+              symbol,
+              contractType
+            });
           }
-        } else {
-          // Send direct buy request
-          ws.send(JSON.stringify({
-            buy: 1,
-            price: 100.0,
-            parameters: {
-              amount: parseFloat(amount),
-              basis: 'stake',
-              contract_type: contractType,
-              currency: parsed.authorize.currency || 'USD',
-              duration: parseInt(durationTicks, 10),
-              duration_unit: 't',
-              symbol: symbol
-            }
-          }));
+        } else if (parsed.error) {
+          if (!responded) {
+            responded = true;
+            clearTimeout(timeout);
+            try { ws.close(); } catch (e) {}
+            return res.json({ success: false, error: parsed.error.message || 'Error ejecutando la orden' });
+          }
         }
-      } else if (parsed.msg_type === 'buy') {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeout);
-          ws.close();
-          const buyData = parsed.buy;
-          res.json({
-            success: true,
-            contract_id: buyData.contract_id,
-            buy_price: buyData.buy_price,
-            balance_after: buyData.balance_after,
-            purchase_time: buyData.purchase_time,
-            shortcode: buyData.shortcode,
-            symbol,
-            contractType
-          });
-        }
-      } else if (parsed.error) {
-        if (!responded) {
-          responded = true;
-          clearTimeout(timeout);
-          ws.close();
-          res.json({ success: false, error: parsed.error.message || 'Error ejecutando la orden' });
-        }
-      }
-    } catch (e: any) {
+      } catch (e: any) {}
+    });
+
+    ws.on('error', () => {
+      clearTimeout(timeout);
+      next();
+    });
+  };
+
+  const next = () => {
+    if (responded) return;
+    if (idx < endpoints.length) {
+      const u = endpoints[idx];
+      idx++;
+      tryTrade(u);
+    } else {
       if (!responded) {
         responded = true;
-        clearTimeout(timeout);
-        ws.close();
-        res.status(500).json({ success: false, error: 'Error procesando respuesta de compra' });
+        res.status(504).json({ success: false, error: 'Tiempo de espera agotado al conectar con Deriv' });
       }
     }
-  });
+  };
 
-  ws.on('error', (err) => {
-    if (!responded) {
-      responded = true;
-      clearTimeout(timeout);
-      res.status(500).json({ success: false, error: `Error de conexión: ${err.message}` });
-    }
-  });
+  next();
 });
 
 // =============================================================================

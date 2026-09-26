@@ -177,8 +177,13 @@ app.post('/api/deriv/test-connection', (req, res) => {
     return;
   }
 
-  const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${appId}`;
-  const ws = new WebSocket(wsUrl);
+  const wsUrl = `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`;
+  const ws = new WebSocket(wsUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'Origin': 'https://app.deriv.com'
+    }
+  });
 
   let responded = false;
 
@@ -250,8 +255,13 @@ app.post('/api/deriv/test-connection', (req, res) => {
 app.post('/api/deriv/fetch-ticks', (req, res) => {
   const { symbol = 'R_100', count = 20, appId = '1089' } = req.body;
 
-  const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${appId}`;
-  const ws = new WebSocket(wsUrl);
+  const wsUrl = `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`;
+  const ws = new WebSocket(wsUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'Origin': 'https://app.deriv.com'
+    }
+  });
 
   let responded = false;
 
@@ -337,8 +347,13 @@ app.post('/api/deriv/execute-trade', (req, res) => {
     return res.status(400).json({ success: false, error: 'Token de API requerido' });
   }
 
-  const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${appId}`;
-  const ws = new WebSocket(wsUrl);
+  const wsUrl = `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`;
+  const ws = new WebSocket(wsUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+      'Origin': 'https://app.deriv.com'
+    }
+  });
 
   let responded = false;
 

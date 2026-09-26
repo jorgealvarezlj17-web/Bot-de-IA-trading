@@ -320,6 +320,111 @@ app.post('/api/deriv/fetch-ticks', (req, res) => {
   });
 });
 
+/**
+ * 4. Execute Instant Direct Trade on Deriv
+ */
+app.post('/api/deriv/execute-trade', (req, res) => {
+  const {
+    token = 'pat_e1812e7694a4130e5187e7e77a1c9392fabffb197ffe209629e12f6a9a337546',
+    symbol = 'R_100',
+    contractType = 'CALL',
+    amount = 1.0,
+    durationTicks = 5,
+    appId = '1089'
+  } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ success: false, error: 'Token de API requerido' });
+  }
+
+  const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${appId}`;
+  const ws = new WebSocket(wsUrl);
+
+  let responded = false;
+
+  const timeout = setTimeout(() => {
+    if (!responded) {
+      responded = true;
+      ws.close();
+      res.status(504).json({ success: false, error: 'Tiempo de espera agotado ejecutando orden en Deriv' });
+    }
+  }, 10000);
+
+  ws.on('open', () => {
+    ws.send(JSON.stringify({ authorize: token }));
+  });
+
+  ws.on('message', (data: WebSocket.Data) => {
+    try {
+      const parsed = JSON.parse(data.toString());
+      if (parsed.msg_type === 'authorize') {
+        if (parsed.error) {
+          if (!responded) {
+            responded = true;
+            clearTimeout(timeout);
+            ws.close();
+            res.json({ success: false, error: parsed.error.message || 'Error de autorización' });
+          }
+        } else {
+          // Send direct buy request
+          ws.send(JSON.stringify({
+            buy: 1,
+            price: 100.0,
+            parameters: {
+              amount: parseFloat(amount),
+              basis: 'stake',
+              contract_type: contractType,
+              currency: parsed.authorize.currency || 'USD',
+              duration: parseInt(durationTicks, 10),
+              duration_unit: 't',
+              symbol: symbol
+            }
+          }));
+        }
+      } else if (parsed.msg_type === 'buy') {
+        if (!responded) {
+          responded = true;
+          clearTimeout(timeout);
+          ws.close();
+          const buyData = parsed.buy;
+          res.json({
+            success: true,
+            contract_id: buyData.contract_id,
+            buy_price: buyData.buy_price,
+            balance_after: buyData.balance_after,
+            purchase_time: buyData.purchase_time,
+            shortcode: buyData.shortcode,
+            symbol,
+            contractType
+          });
+        }
+      } else if (parsed.error) {
+        if (!responded) {
+          responded = true;
+          clearTimeout(timeout);
+          ws.close();
+          res.json({ success: false, error: parsed.error.message || 'Error ejecutando la orden' });
+        }
+      }
+    } catch (e: any) {
+      if (!responded) {
+        responded = true;
+        clearTimeout(timeout);
+        ws.close();
+        res.status(500).json({ success: false, error: 'Error procesando respuesta de compra' });
+      }
+    }
+  });
+
+  ws.on('error', (err) => {
+    if (!responded) {
+      responded = true;
+      clearTimeout(timeout);
+      res.status(500).json({ success: false, error: `Error de conexión: ${err.message}` });
+    }
+  });
+});
+
 // =============================================================================
 // VITE DEV SERVER MIDDLEWARE & STATIC SERVING
 // =============================================================================

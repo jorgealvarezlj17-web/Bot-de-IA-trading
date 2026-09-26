@@ -3,17 +3,60 @@ import { Activity, ShieldCheck, RefreshCw, DollarSign, Zap, CheckCircle2, AlertT
 import { DerivAccount, MarketIndicators } from '../types';
 
 export const DerivTester: React.FC = () => {
-  const [token, setToken] = useState<string>('');
+  const [token, setToken] = useState<string>('pat_e1812e7694a4130e5187e7e77a1c9392fabffb197ffe209629e12f6a9a337546');
   const [appId, setAppId] = useState<string>('1089');
   const [loading, setLoading] = useState<boolean>(false);
   const [account, setAccount] = useState<DerivAccount | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Manual Instant Trade Execution State
+  const [executingTrade, setExecutingTrade] = useState<boolean>(false);
+  const [tradeResult, setTradeResult] = useState<any | null>(null);
+  const [tradeError, setTradeError] = useState<string | null>(null);
 
   // Tick Streamer States
   const [symbol, setSymbol] = useState<string>('R_100');
   const [fetchingTicks, setFetchingTicks] = useState<boolean>(false);
   const [ticks, setTicks] = useState<number[]>([]);
   const [indicators, setIndicators] = useState<MarketIndicators | null>(null);
+
+  const handleExecuteTrade = async (type: 'CALL' | 'PUT') => {
+    if (!token.trim()) {
+      setTradeError('Por favor ingresa o valida tu Token de Deriv.');
+      return;
+    }
+
+    setExecutingTrade(true);
+    setTradeResult(null);
+    setTradeError(null);
+
+    try {
+      const response = await fetch('/api/deriv/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: token.trim(),
+          symbol,
+          contractType: type,
+          amount: 1.0,
+          durationTicks: 5,
+          appId,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setTradeResult(data);
+      } else {
+        setTradeError(data.error || 'No se pudo ejecutar la orden en Deriv.');
+      }
+    } catch (err: any) {
+      setTradeError(err.message || 'Error de conexión con el servidor.');
+    } finally {
+      setExecutingTrade(false);
+    }
+  };
 
   const handleTestConnection = async () => {
     if (!token.trim()) {
@@ -222,6 +265,58 @@ export const DerivTester: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* Instant Manual Trigger Panel */}
+            <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl space-y-3">
+              <span className="text-xs font-bold text-white block">
+                ⚡ Panel de Disparo de Prueba (Ejecución Manual 1-Click)
+              </span>
+              <p className="text-[11px] text-slate-400">
+                Usa estos botones para enviar una orden directa de prueba ($1.00 USD, 5 ticks) a tu cuenta Demo de Deriv y verificar el resultado inmediatamente.
+              </p>
+
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <button
+                  onClick={() => handleExecuteTrade('CALL')}
+                  disabled={executingTrade}
+                  className="py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-md shadow-emerald-900/20"
+                >
+                  {executingTrade ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                  <span>COMPRA 'CALL' ($1.00)</span>
+                </button>
+
+                <button
+                  onClick={() => handleExecuteTrade('PUT')}
+                  disabled={executingTrade}
+                  className="py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 shadow-md shadow-rose-900/20"
+                >
+                  {executingTrade ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                  <span>VENTA 'PUT' ($1.00)</span>
+                </button>
+              </div>
+
+              {tradeError && (
+                <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center gap-2 text-xs text-red-300 font-mono">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+                  <span>{tradeError}</span>
+                </div>
+              )}
+
+              {tradeResult && (
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1 font-mono text-xs">
+                  <div className="flex items-center justify-between font-bold text-emerald-400">
+                    <span>🎉 ¡ORDEN EJECUTADA EN DERIV!</span>
+                    <span>Ticket #{tradeResult.contract_id}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-300">
+                    Símbolo: <span className="text-white font-bold">{tradeResult.symbol}</span> | Tipo: <span className="text-white font-bold">{tradeResult.contractType}</span> | Inversión: <span className="text-emerald-400 font-bold">${tradeResult.buy_price} USD</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 border-t border-emerald-500/20 pt-1 mt-1">
+                    Balance restante: ${tradeResult.balance_after} USD
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 

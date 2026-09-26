@@ -169,6 +169,65 @@ Analiza el mercado usando tus System Instructions y devuelve la llamada a funciÃ
 /**
  * 2. Test Deriv WebSocket Token Connection
  */
+app.post('/api/deriv/ping', (req, res) => {
+  const { appId = '1089' } = req.body;
+  const start = Date.now();
+  const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=${appId}`;
+  
+  let responded = false;
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(wsUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Origin': 'https://app.deriv.com'
+      }
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+
+  const timeout = setTimeout(() => {
+    if (!responded) {
+      responded = true;
+      try { ws.close(); } catch (e) {}
+      res.status(504).json({ success: false, error: 'Timeout de 5s al conectar con Deriv Ping' });
+    }
+  }, 5000);
+
+  ws.on('open', () => {
+    ws.send(JSON.stringify({ ping: 1 }));
+  });
+
+  ws.on('message', (data: WebSocket.Data) => {
+    if (!responded) {
+      try {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.ping === 'pong') {
+          responded = true;
+          clearTimeout(timeout);
+          try { ws.close(); } catch (e) {}
+          const latency = Date.now() - start;
+          return res.json({ success: true, ping: 'pong', latencyMs: latency, endpoint: wsUrl });
+        }
+      } catch (e: any) {
+        // ignore
+      }
+    }
+  });
+
+  ws.on('error', (err) => {
+    if (!responded) {
+      responded = true;
+      clearTimeout(timeout);
+      res.status(502).json({ success: false, error: `Error conectando a Deriv: ${err.message}` });
+    }
+  });
+});
+
+/**
+ * 2.1 Test Deriv WebSocket Token Connection
+ */
 app.post('/api/deriv/test-connection', (req, res) => {
   const { token, appId = '1089' } = req.body;
 

@@ -141,17 +141,40 @@ export const DerivTester: React.FC = () => {
   };
 
   // Enviar PING en tiempo real para medir latencia con Deriv
-  const handleSendPing = () => {
+  const handleSendPing = async () => {
+    // 1. Try browser WebSocket
+    try {
+      pingTimestampRef.current = Date.now();
+      addLog('info', 'Comprobando conexión WebSocket cliente y nube...');
+      
+      const serverRes = await fetch('/api/deriv/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appId: appId.trim() || '1089' })
+      });
+      const data = await serverRes.json();
+      if (data.success && data.ping === 'pong') {
+        setPingLatency(data.latencyMs);
+        setWsStatus('CONNECTED');
+        addLog('received', `¡PONG exitoso de Deriv! Latencia: ${data.latencyMs}ms | Servidor: ${data.endpoint}`, data.latencyMs);
+        setError(null);
+        return;
+      }
+    } catch (e: any) {
+      addLog('error', `Fallo al verificar ping en servidor: ${e.message}`);
+    }
+
+    // Try client side if server failed
     connectDerivSocket((ws) => {
       pingTimestampRef.current = Date.now();
       const payload = { ping: 1 };
       ws.send(JSON.stringify(payload));
-      addLog('sent', `PING enviado a Deriv: {"ping": 1}`);
+      addLog('sent', `PING cliente enviado a Deriv: {"ping": 1}`);
     });
   };
 
-  // 1. Conectar y Validar Cuenta directamente desde el navegador del usuario
-  const handleTestConnection = () => {
+  // 1. Conectar y Validar Cuenta directamente o mediante proxy seguro de alta velocidad
+  const handleTestConnection = async () => {
     if (!token.trim()) {
       setError('Por favor ingresa tu Token de API de Deriv.');
       return;
@@ -159,7 +182,33 @@ export const DerivTester: React.FC = () => {
 
     setLoading(true);
     setError(null);
+    addLog('info', 'Validando Token con Deriv API...');
 
+    // First attempt: Cloud Server Proxy (Bypasses any ISP / mobile phone WebSocket port block)
+    try {
+      const res = await fetch('/api/deriv/test-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token.trim(), appId: appId.trim() || '1089' })
+      });
+      const data = await res.json();
+      if (data.success && data.account) {
+        setLoading(false);
+        setAccount(data.account);
+        setWsStatus('CONNECTED');
+        addLog('received', `¡Cuenta validada! Login: ${data.account.loginid} | Saldo: $${data.account.balance} ${data.account.currency}`);
+        return;
+      } else if (data.error) {
+        setLoading(false);
+        setError(`Respuesta de Deriv: ${data.error}`);
+        addLog('error', `Deriv error: ${data.error}`);
+        return;
+      }
+    } catch (err: any) {
+      addLog('info', 'Proxy nube falló, intentando conexión directa del navegador...');
+    }
+
+    // Fallback: Direct browser WebSocket
     connectDerivSocket((ws) => {
       const onMessage = (event: MessageEvent) => {
         try {
@@ -168,6 +217,7 @@ export const DerivTester: React.FC = () => {
             setLoading(false);
             if (data.error) {
               setError(`Error de Deriv: ${data.error.message || 'Token inválido o sin permisos'}`);
+              addLog('error', `Deriv error: ${data.error.message}`);
             } else {
               const auth = data.authorize;
               setAccount({
@@ -177,6 +227,8 @@ export const DerivTester: React.FC = () => {
                 currency: auth.currency,
                 is_virtual: auth.is_virtual === 1,
               });
+              setWsStatus('CONNECTED');
+              addLog('received', `¡Cuenta validada en directo! ${auth.loginid} | $${auth.balance}`);
               setError(null);
             }
           }
@@ -191,8 +243,8 @@ export const DerivTester: React.FC = () => {
     });
   };
 
-  // 2. Ejecutar Operación Real en Deriv (1-Click)
-  const handleExecuteTrade = (type: 'CALL' | 'PUT') => {
+  // 2. Ejecutar Operación Real en Deriv (1-Click) con proxy de alta velocidad
+  const handleExecuteTrade = async (type: 'CALL' | 'PUT') => {
     if (!token.trim()) {
       setTradeError('Por favor valida primero tu Token de Deriv.');
       return;
@@ -201,6 +253,40 @@ export const DerivTester: React.FC = () => {
     setExecutingTrade(true);
     setTradeResult(null);
     setTradeError(null);
+    addLog('info', `Enviando orden ${type} de $1.00 USD en ${symbol}...`);
+
+    // 1. First attempt: Server-side proxy (bypasses any ISP / mobile phone block)
+    try {
+      const res = await fetch('/api/deriv/execute-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: token.trim(),
+          symbol: symbol,
+          contractType: type,
+          amount: 1.0,
+          durationTicks: 5,
+          appId: appId.trim() || '1089'
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setExecutingTrade(false);
+        setTradeResult(data);
+        if (account) {
+          setAccount({ ...account, balance: data.balance_after });
+        }
+        addLog('received', `¡Orden ejecutada en Deriv! Contrato #${data.contract_id} (Balance tras compra: $${data.balance_after})`);
+        return;
+      } else if (data.error) {
+        setExecutingTrade(false);
+        setTradeError(data.error);
+        addLog('error', `Deriv error en orden: ${data.error}`);
+        return;
+      }
+    } catch (e: any) {
+      addLog('info', 'Intentando ejecución mediante socket local...');
+    }
 
     connectDerivSocket((ws) => {
       const onMessage = (event: MessageEvent) => {
@@ -235,9 +321,11 @@ export const DerivTester: React.FC = () => {
             if (account) {
               setAccount({ ...account, balance: b.balance_after });
             }
+            addLog('received', `¡Orden #${b.contract_id} completada vía socket navegador!`);
           } else if (data.error) {
             setExecutingTrade(false);
             setTradeError(data.error.message || 'Error al ejecutar orden.');
+            addLog('error', `Error en compra: ${data.error.message}`);
           }
         } catch (e: any) {
           setExecutingTrade(false);

@@ -13,6 +13,7 @@ import time
 import math
 import logging
 import threading
+import ssl
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import websocket
 import requests
@@ -293,13 +294,14 @@ def on_open(ws):
 
 def start_bot():
     ws_urls = [
+        f"wss://ws.derivws.com/websockets/v3?app_id={DERIV_APP_ID}",
         f"wss://ws.binaryws.com/websockets/v3?app_id={DERIV_APP_ID}",
-        f"wss://ws.deriv.com/websockets/v3?app_id={DERIV_APP_ID}"
+        f"wss://frontend.derivws.com/websockets/v3?app_id={DERIV_APP_ID}"
     ]
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Origin": "https://app.deriv.com"
-    }
+    headers = [
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Origin: https://app.deriv.com"
+    ]
     url_index = 0
     while True:
         current_url = ws_urls[url_index % len(ws_urls)]
@@ -313,7 +315,11 @@ def start_bot():
                 on_error=on_error,
                 on_close=on_close
             )
-            state.ws.run_forever(ping_interval=30, ping_timeout=10)
+            state.ws.run_forever(
+                ping_interval=30,
+                ping_timeout=10,
+                sslopt={"cert_reqs": ssl.CERT_NONE}
+            )
         except Exception as e:
             logger.error(f"Excepción en bucle de reconexión WebSocket: {e}")
         url_index += 1

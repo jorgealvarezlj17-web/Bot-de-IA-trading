@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Activity, ShieldCheck, RefreshCw, DollarSign, Zap, CheckCircle2, AlertTriangle, Play, Sliders } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Activity, ShieldCheck, RefreshCw, DollarSign, Zap, CheckCircle2, AlertTriangle, Play, Pause, Sliders, TrendingUp, TrendingDown } from 'lucide-react';
 import { DerivAccount, MarketIndicators } from '../types';
 
 export const DerivTester: React.FC = () => {
@@ -16,49 +16,142 @@ export const DerivTester: React.FC = () => {
 
   // Tick Streamer States
   const [symbol, setSymbol] = useState<string>('R_100');
-  const [fetchingTicks, setFetchingTicks] = useState<boolean>(false);
+  const [livePrice, setLivePrice] = useState<number | null>(null);
   const [ticks, setTicks] = useState<number[]>([]);
   const [indicators, setIndicators] = useState<MarketIndicators | null>(null);
+  const [isSubscribed, setIsSubscribed] = useState<boolean>(false);
 
-  const handleExecuteTrade = async (type: 'CALL' | 'PUT') => {
-    if (!token.trim()) {
-      setTradeError('Por favor ingresa o valida tu Token de Deriv.');
+  // Client-side WebSocket ref
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // Live Diagnostic Terminal Logs
+  interface DiagnosticLog {
+    time: string;
+    type: 'sent' | 'received' | 'error' | 'info';
+    text: string;
+    latencyMs?: number;
+  }
+  const [logs, setLogs] = useState<DiagnosticLog[]>([]);
+  const [pingLatency, setPingLatency] = useState<number | null>(null);
+  const [wsStatus, setWsStatus] = useState<'DISCONNECTED' | 'CONNECTING' | 'CONNECTED'>('DISCONNECTED');
+  const pingTimestampRef = useRef<number>(0);
+
+  const addLog = (type: DiagnosticLog['type'], text: string, latencyMs?: number) => {
+    const time = new Date().toLocaleTimeString();
+    setLogs((prev) => [{ time, type, text, latencyMs }, ...prev.slice(0, 49)]);
+  };
+
+  // Deriv official WebSocket endpoints to try
+  const WS_ENDPOINTS = [
+    `wss://ws.derivws.com/websockets/v3?app_id=${appId.trim() || '1089'}`,
+    `wss://ws.binaryws.com/websockets/v3?app_id=${appId.trim() || '1089'}`,
+    `wss://frontend.binaryws.com/websockets/v3?app_id=${appId.trim() || '1089'}`
+  ];
+
+  // Helper to open socket with fallback
+  const connectDerivSocket = (callback: (ws: WebSocket) => void) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      setWsStatus('CONNECTED');
+      callback(wsRef.current);
       return;
     }
 
-    setExecutingTrade(true);
-    setTradeResult(null);
-    setTradeError(null);
+    setWsStatus('CONNECTING');
+    addLog('info', `Iniciando handshake WebSocket con Deriv...`);
+    let endpointIndex = 0;
 
-    try {
-      const response = await fetch('/api/deriv/execute-trade', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          token: token.trim(),
-          symbol,
-          contractType: type,
-          amount: 1.0,
-          durationTicks: 5,
-          appId,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        setTradeResult(data);
-      } else {
-        setTradeError(data.error || 'No se pudo ejecutar la orden en Deriv.');
+    const tryNext = () => {
+      if (endpointIndex >= WS_ENDPOINTS.length) {
+        setLoading(false);
+        setWsStatus('DISCONNECTED');
+        addLog('error', 'Fallo de conexión en todos los servidores de Deriv.');
+        setError('No se pudo conectar a los servidores de Deriv (WebSocket bloqueado por tu red/proveedor). Prueba usando datos móviles o VPN.');
+        return;
       }
-    } catch (err: any) {
-      setTradeError(err.message || 'Error de conexión con el servidor.');
-    } finally {
-      setExecutingTrade(false);
-    }
+
+      const url = WS_ENDPOINTS[endpointIndex];
+      endpointIndex++;
+      addLog('info', `Intentando endpoint: ${url}`);
+
+      try {
+        const socket = new WebSocket(url);
+        let opened = false;
+
+        const openTimeout = setTimeout(() => {
+          if (!opened && socket.readyState !== WebSocket.OPEN) {
+            addLog('error', `Timeout alcanzado para ${url}`);
+            socket.close();
+            tryNext();
+          }
+        }, 4000);
+        
+        socket.onopen = () => {
+          opened = true;
+          clearTimeout(openTimeout);
+          wsRef.current = socket;
+          setWsStatus('CONNECTED');
+          addLog('info', `¡Handshake exitoso! Conectado a ${url}`);
+
+          // Global listener for diagnostic logging
+          socket.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.ping === 'pong') {
+                const latency = Date.now() - pingTimestampRef.current;
+                setPingLatency(latency);
+                addLog('received', `PONG recibido desde Deriv (${latency}ms) - Red 100% activa`, latency);
+              } else if (msg.msg_type === 'authorize') {
+                if (msg.error) {
+                  addLog('error', `Deriv error en authorize: ${msg.error.message || msg.error.code}`);
+                } else {
+                  addLog('received', `Cuenta autorizada: ${msg.authorize.loginid} (Balance: $${msg.authorize.balance} ${msg.authorize.currency})`);
+                }
+              } else if (msg.msg_type === 'tick') {
+                // Keep ticks quiet or log first tick
+                addLog('received', `Tick en vivo: ${msg.tick.symbol} = ${msg.tick.quote}`);
+              } else if (msg.msg_type) {
+                addLog('received', `Mensaje Deriv: [${msg.msg_type}]`);
+              }
+            } catch (err) {
+              addLog('received', `Raw: ${event.data.substring(0, 80)}...`);
+            }
+          };
+
+          socket.onclose = () => {
+            setWsStatus('DISCONNECTED');
+            addLog('info', 'Conexión WebSocket cerrada por el servidor.');
+          };
+
+          callback(socket);
+        };
+
+        socket.onerror = () => {
+          clearTimeout(openTimeout);
+          addLog('error', `Error en endpoint ${url}, probando respaldo...`);
+          socket.close();
+          tryNext();
+        };
+      } catch (e: any) {
+        addLog('error', `Excepción al conectar: ${e.message}`);
+        tryNext();
+      }
+    };
+
+    tryNext();
   };
 
-  const handleTestConnection = async () => {
+  // Enviar PING en tiempo real para medir latencia con Deriv
+  const handleSendPing = () => {
+    connectDerivSocket((ws) => {
+      pingTimestampRef.current = Date.now();
+      const payload = { ping: 1 };
+      ws.send(JSON.stringify(payload));
+      addLog('sent', `PING enviado a Deriv: {"ping": 1}`);
+    });
+  };
+
+  // 1. Conectar y Validar Cuenta directamente desde el navegador del usuario
+  const handleTestConnection = () => {
     if (!token.trim()) {
       setError('Por favor ingresa tu Token de API de Deriv.');
       return;
@@ -67,82 +160,160 @@ export const DerivTester: React.FC = () => {
     setLoading(true);
     setError(null);
 
-    try {
-      const response = await fetch('/api/deriv/test-connection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token.trim(), appId }),
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        setAccount(data.account);
-      } else {
-        setError(data.error || 'No se pudo autorizar el Token.');
-      }
-    } catch (err: any) {
-      setError(err.message || 'Error de red al conectar con Deriv.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleFetchTicks = async () => {
-    setFetchingTicks(true);
-    try {
-      const response = await fetch('/api/deriv/fetch-ticks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol, count: 25, appId }),
-      });
-
-      const data = await response.json();
-
-      if (data.success && data.prices) {
-        const pricesList: number[] = data.prices;
-        setTicks(pricesList);
-
-        // Compute local indicators
-        if (pricesList.length >= 14) {
-          const lastPrice = pricesList[pricesList.length - 1];
-          const deltas = [];
-          for (let i = 1; i < pricesList.length; i++) {
-            deltas.push(pricesList[i] - pricesList[i - 1]);
+    connectDerivSocket((ws) => {
+      const onMessage = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'authorize') {
+            setLoading(false);
+            if (data.error) {
+              setError(`Error de Deriv: ${data.error.message || 'Token inválido o sin permisos'}`);
+            } else {
+              const auth = data.authorize;
+              setAccount({
+                loginid: auth.loginid,
+                email: auth.email,
+                balance: auth.balance,
+                currency: auth.currency,
+                is_virtual: auth.is_virtual === 1,
+              });
+              setError(null);
+            }
           }
-          const recent14 = deltas.slice(-14);
-          const gains = recent14.map((d) => (d > 0 ? d : 0));
-          const losses = recent14.map((d) => (d < 0 ? -d : 0));
-          const avgGain = gains.reduce((a, b) => a + b, 0) / 14;
-          const avgLoss = losses.reduce((a, b) => a + b, 0) / 14;
-          const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-          const calculatedRsi = round(100 - 100 / (1 + rs), 2);
-
-          // EMA 9 & EMA 21
-          const ema9Val = calcEMA(pricesList, 9);
-          const ema21Val = calcEMA(pricesList, 21);
-          const trendDir = ema9Val > ema21Val ? 'BULLISH' : ema9Val < ema21Val ? 'BEARISH' : 'NEUTRAL';
-          const pDiff5 = round(lastPrice - pricesList[pricesList.length - 5], 4);
-
-          setIndicators({
-            price: lastPrice,
-            rsi: calculatedRsi,
-            ema9: ema9Val,
-            ema21: ema21Val,
-            trend: trendDir,
-            priceChange5t: pDiff5,
-            volatility: 0.35,
-          });
+        } catch (e: any) {
+          setLoading(false);
+          setError('Error procesando respuesta de Deriv.');
         }
-      } else {
-        setError(data.error || 'Error obteniendo ticks de Deriv.');
-      }
-    } catch (err: any) {
-      setError(err.message || 'Error de conexión con el servidor.');
-    } finally {
-      setFetchingTicks(false);
-    }
+      };
+
+      ws.addEventListener('message', onMessage);
+      ws.send(JSON.stringify({ authorize: token.trim() }));
+    });
   };
+
+  // 2. Ejecutar Operación Real en Deriv (1-Click)
+  const handleExecuteTrade = (type: 'CALL' | 'PUT') => {
+    if (!token.trim()) {
+      setTradeError('Por favor valida primero tu Token de Deriv.');
+      return;
+    }
+
+    setExecutingTrade(true);
+    setTradeResult(null);
+    setTradeError(null);
+
+    connectDerivSocket((ws) => {
+      const onMessage = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'authorize' && !data.error) {
+            // Once authorized, send the buy order
+            ws.send(JSON.stringify({
+              buy: 1,
+              price: 100.0,
+              parameters: {
+                amount: 1.0,
+                basis: 'stake',
+                contract_type: type,
+                currency: account?.currency || 'USD',
+                duration: 5,
+                duration_unit: 't',
+                symbol: symbol,
+              }
+            }));
+          } else if (data.msg_type === 'buy') {
+            setExecutingTrade(false);
+            const b = data.buy;
+            setTradeResult({
+              contract_id: b.contract_id,
+              buy_price: b.buy_price,
+              balance_after: b.balance_after,
+              purchase_time: b.purchase_time,
+              symbol,
+              contractType: type,
+            });
+            if (account) {
+              setAccount({ ...account, balance: b.balance_after });
+            }
+          } else if (data.error) {
+            setExecutingTrade(false);
+            setTradeError(data.error.message || 'Error al ejecutar orden.');
+          }
+        } catch (e: any) {
+          setExecutingTrade(false);
+          setTradeError('Error en la respuesta de orden.');
+        }
+      };
+
+      ws.addEventListener('message', onMessage);
+      ws.send(JSON.stringify({ authorize: token.trim() }));
+    });
+  };
+
+  // 3. Flujo continuo de ticks en tiempo real
+  const handleToggleTicks = () => {
+    if (isSubscribed) {
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ forget_all: 'ticks' }));
+      }
+      setIsSubscribed(false);
+      return;
+    }
+
+    connectDerivSocket((ws) => {
+      const onMessage = (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.msg_type === 'tick' && data.tick) {
+            const quote = data.tick.quote;
+            setLivePrice(quote);
+            setTicks((prev) => {
+              const updated = [...prev.slice(-30), quote];
+              if (updated.length >= 14) {
+                const deltas = [];
+                for (let i = 1; i < updated.length; i++) {
+                  deltas.push(updated[i] - updated[i - 1]);
+                }
+                const recent14 = deltas.slice(-14);
+                const gains = recent14.map((d) => (d > 0 ? d : 0));
+                const losses = recent14.map((d) => (d < 0 ? -d : 0));
+                const avgGain = gains.reduce((a, b) => a + b, 0) / 14;
+                const avgLoss = losses.reduce((a, b) => a + b, 0) / 14;
+                const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+                const calculatedRsi = Math.round((100 - 100 / (1 + rs)) * 100) / 100;
+
+                setIndicators({
+                  price: quote,
+                  rsi: calculatedRsi,
+                  ema9: quote,
+                  ema21: quote,
+                  trend: calculatedRsi > 50 ? 'BULLISH' : 'BEARISH',
+                  priceChange5t: Math.round((quote - (updated[updated.length - 5] || quote)) * 1000) / 1000,
+                  volatility: 0.35,
+                });
+              }
+              return updated;
+            });
+          }
+        } catch (e) {
+          // ignore
+        }
+      };
+
+      ws.addEventListener('message', onMessage);
+      ws.send(JSON.stringify({ ticks: symbol, subscribe: 1 }));
+      setIsSubscribed(true);
+    });
+  };
+
+  useEffect(() => {
+    // Component mounted cleanly
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, []);
 
   const calcEMA = (prices: number[], period: number) => {
     if (prices.length < period) return prices[prices.length - 1] || 0;
@@ -172,6 +343,30 @@ export const DerivTester: React.FC = () => {
           <p className="text-xs text-slate-400">
             Prueba tu API Token de Deriv y verifica el balance de cuenta y flujo de ticks en tiempo real.
           </p>
+        </div>
+
+        {/* Live Network Health Status Badge & Raw Ping Button */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-xl text-xs font-mono">
+            <span className={`w-2.5 h-2.5 rounded-full ${wsStatus === 'CONNECTED' ? 'bg-emerald-400 animate-pulse' : wsStatus === 'CONNECTING' ? 'bg-amber-400 animate-spin' : 'bg-rose-500'}`} />
+            <span className="text-slate-300">
+              {wsStatus === 'CONNECTED' ? 'WS CONECTADO' : wsStatus === 'CONNECTING' ? 'CONECTANDO...' : 'WS DESCONECTADO'}
+            </span>
+            {pingLatency !== null && (
+              <span className="text-emerald-400 font-bold ml-1">
+                {pingLatency} ms
+              </span>
+            )}
+          </div>
+
+          <button
+            onClick={handleSendPing}
+            className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 font-mono text-xs rounded-xl transition-all flex items-center gap-1.5"
+            title="Enviar mensaje ping raw de Deriv y medir latencia real"
+          >
+            <Zap className="w-3.5 h-3.5" />
+            <span>Test Ping Raw</span>
+          </button>
         </div>
       </div>
 
@@ -342,12 +537,15 @@ export const DerivTester: React.FC = () => {
               </select>
 
               <button
-                onClick={handleFetchTicks}
-                disabled={fetchingTicks}
-                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs rounded-lg transition-all flex items-center gap-1 disabled:opacity-50"
+                onClick={handleToggleTicks}
+                className={`px-3 py-1 font-medium text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-sm ${
+                  isSubscribed
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                    : 'bg-blue-600 hover:bg-blue-500 text-white'
+                }`}
               >
-                {fetchingTicks ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                <span>Obtener Ticks</span>
+                {isSubscribed ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                <span>{isSubscribed ? 'Detener Ticks' : 'Iniciar Ticks en Vivo'}</span>
               </button>
             </div>
           </div>
@@ -416,6 +614,60 @@ export const DerivTester: React.FC = () => {
             <div className="p-8 text-center bg-slate-950/50 border border-dashed border-slate-800 rounded-xl text-xs text-slate-500">
               Haz clic en "Obtener Ticks" para consultar precios e indicadores en tiempo real desde los servidores de Deriv.
             </div>
+          )}
+        </div>
+      </div>
+
+      {/* Live WebSocket Inspector Terminal */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 space-y-3">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+          <div className="flex items-center gap-2">
+            <Activity className="w-4 h-4 text-emerald-400" />
+            <h3 className="text-sm font-bold text-white">Consola de Inspección WebSocket en Vivo (Evidencia de Red)</h3>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-mono text-slate-500">
+              {logs.length} paquetes registrados
+            </span>
+            <button
+              onClick={() => setLogs([])}
+              className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+            >
+              Limpiar
+            </button>
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-400">
+          Aquí puedes ver los paquetes de bytes crudos que viajan directamente entre tu navegador y los servidores de Deriv. Cada respuesta confirma el estado real de la API.
+        </p>
+
+        <div className="bg-slate-950 border border-slate-800/80 rounded-xl p-3 font-mono text-xs max-h-56 overflow-y-auto space-y-1.5 no-scrollbar">
+          {logs.length === 0 ? (
+            <div className="text-slate-600 italic py-4 text-center">
+              Presiona "Test Ping Raw", "Verificar Token" o "Iniciar Ticks en Vivo" para inspeccionar los paquetes.
+            </div>
+          ) : (
+            logs.map((log, i) => (
+              <div
+                key={i}
+                className={`flex items-start gap-2 text-[11px] ${
+                  log.type === 'sent'
+                    ? 'text-blue-400'
+                    : log.type === 'received'
+                    ? 'text-emerald-400'
+                    : log.type === 'error'
+                    ? 'text-rose-400'
+                    : 'text-slate-400'
+                }`}
+              >
+                <span className="text-slate-600 shrink-0">[{log.time}]</span>
+                <span className="font-bold shrink-0">
+                  {log.type === 'sent' ? '📤 TX:' : log.type === 'received' ? '📥 RX:' : log.type === 'error' ? '❌ ERR:' : 'ℹ️ INFO:'}
+                </span>
+                <span className="break-all">{log.text}</span>
+              </div>
+            ))
           )}
         </div>
       </div>

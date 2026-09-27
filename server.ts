@@ -249,9 +249,9 @@ app.post('/api/deriv/test-connection', (req, res) => {
   }
 
   const endpoints = [
-    `wss://api.derivws.com/trading/v1/options/ws/public`,
     `wss://ws.derivws.com/websockets/v3?app_id=${appId}`,
-    `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`
+    `wss://ws.binaryws.com/websockets/v3?app_id=${appId}`,
+    `wss://frontend.binaryws.com/websockets/v3?app_id=${appId}`
   ];
 
   let responded = false;

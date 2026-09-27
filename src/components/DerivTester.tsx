@@ -41,16 +41,23 @@ export const DerivTester: React.FC = () => {
     setLogs((prev) => [{ time, type, text, latencyMs }, ...prev.slice(0, 49)]);
   };
 
-  // Deriv official WebSocket endpoints to try (New official v1 + legacy fallbacks)
-  const WS_ENDPOINTS = [
+  // Endpoints públicos para Ticks y PING de latencia
+  const PUBLIC_WS_ENDPOINTS = [
     `wss://api.derivws.com/trading/v1/options/ws/public`,
+    `wss://ws.derivws.com/websockets/v3?app_id=${appId.trim() || '1089'}`,
+  ];
+
+  // Endpoints para autenticación de cuentas (authorize) y trading
+  const AUTH_WS_ENDPOINTS = [
     `wss://ws.derivws.com/websockets/v3?app_id=${appId.trim() || '1089'}`,
     `wss://ws.binaryws.com/websockets/v3?app_id=${appId.trim() || '1089'}`,
     `wss://frontend.binaryws.com/websockets/v3?app_id=${appId.trim() || '1089'}`
   ];
 
   // Helper to open socket with fallback
-  const connectDerivSocket = (callback: (ws: WebSocket) => void) => {
+  const connectDerivSocket = (callback: (ws: WebSocket) => void, forAuth = false) => {
+    const endpointsToUse = forAuth ? AUTH_WS_ENDPOINTS : PUBLIC_WS_ENDPOINTS;
+
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       setWsStatus('CONNECTED');
       callback(wsRef.current);
@@ -62,15 +69,15 @@ export const DerivTester: React.FC = () => {
     let endpointIndex = 0;
 
     const tryNext = () => {
-      if (endpointIndex >= WS_ENDPOINTS.length) {
+      if (endpointIndex >= endpointsToUse.length) {
         setLoading(false);
         setWsStatus('DISCONNECTED');
-        addLog('error', 'Fallo de conexión en todos los servidores de Deriv.');
-        setError('No se pudo conectar a los servidores de Deriv (WebSocket bloqueado por tu red/proveedor). Prueba usando datos móviles o VPN.');
+        addLog('error', 'Fallo de conexión en servidores de Deriv.');
+        setError('No se pudo conectar a los servidores de Deriv. Verifica tu conexión a internet.');
         return;
       }
 
-      const url = WS_ENDPOINTS[endpointIndex];
+      const url = endpointsToUse[endpointIndex];
       endpointIndex++;
       addLog('info', `Intentando endpoint: ${url}`);
 
@@ -108,7 +115,6 @@ export const DerivTester: React.FC = () => {
                   addLog('received', `Cuenta autorizada: ${msg.authorize.loginid} (Balance: $${msg.authorize.balance} ${msg.authorize.currency})`);
                 }
               } else if (msg.msg_type === 'tick') {
-                // Keep ticks quiet or log first tick
                 addLog('received', `Tick en vivo: ${msg.tick.symbol} = ${msg.tick.quote}`);
               } else if (msg.msg_type) {
                 addLog('received', `Mensaje Deriv: [${msg.msg_type}]`);
@@ -209,7 +215,7 @@ export const DerivTester: React.FC = () => {
       addLog('info', 'Proxy nube falló, intentando conexión directa del navegador...');
     }
 
-    // Fallback: Direct browser WebSocket
+    // Fallback: Direct browser WebSocket with authenticated endpoints
     connectDerivSocket((ws) => {
       const onMessage = (event: MessageEvent) => {
         try {
@@ -241,7 +247,7 @@ export const DerivTester: React.FC = () => {
 
       ws.addEventListener('message', onMessage);
       ws.send(JSON.stringify({ authorize: token.trim() }));
-    });
+    }, true);
   };
 
   // 2. Ejecutar Operación Real en Deriv (1-Click) con proxy de alta velocidad

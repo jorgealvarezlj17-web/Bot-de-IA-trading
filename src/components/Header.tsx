@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bot, Cpu, Server, Activity, Terminal } from 'lucide-react';
+import { Bot, Cpu, Server, Activity, Terminal, Zap, Smartphone } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: string;
@@ -8,11 +8,12 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
   const tabs = [
-    { id: 'guide', label: '1. Arquitectura Móvil', icon: Cpu },
-    { id: 'brain', label: '2. Cerebro AI Studio', icon: Bot },
-    { id: 'python', label: '3. Ejecutor Python', icon: Server },
-    { id: 'deriv', label: '4. Conexión Deriv', icon: Activity },
-    { id: 'simulator', label: '5. Probador en Vivo', icon: Terminal },
+    { id: 'scalping', label: '⚡ Bot Scalping en Vivo', icon: Zap },
+    { id: 'mt5', label: '📱 MetaTrader 5 (CFDs)', icon: Smartphone },
+    { id: 'deriv', label: 'Conexión Deriv', icon: Activity },
+    { id: 'brain', label: 'Cerebro AI Studio', icon: Bot },
+    { id: 'python', label: 'Ejecutor Python', icon: Server },
+    { id: 'guide', label: 'Guía y Arquitectura', icon: Cpu },
   ];
 
   return (

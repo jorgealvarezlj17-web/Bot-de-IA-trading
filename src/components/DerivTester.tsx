@@ -3,8 +3,8 @@ import { Activity, ShieldCheck, RefreshCw, DollarSign, Zap, CheckCircle2, AlertT
 import { DerivAccount, MarketIndicators } from '../types';
 
 export const DerivTester: React.FC = () => {
-  const [token, setToken] = useState<string>('');
-  const [appId, setAppId] = useState<string>('1089');
+  const [token, setToken] = useState<string>(() => localStorage.getItem('deriv_api_token') || 'pat_2942a0d125fe788c777be6c39ed580936e87de0700ae87928aeaea0e52c1e824');
+  const [appId, setAppId] = useState<string>(() => localStorage.getItem('deriv_app_id') || '34wcFYGbcorxKULpg0XQb');
   const [loading, setLoading] = useState<boolean>(false);
   const [account, setAccount] = useState<DerivAccount | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +200,8 @@ export const DerivTester: React.FC = () => {
       });
       const data = await res.json();
       if (data.success && data.account) {
+        localStorage.setItem('deriv_api_token', token.trim());
+        localStorage.setItem('deriv_app_id', appId.trim() || '1089');
         setLoading(false);
         setAccount(data.account);
         setWsStatus('CONNECTED');
